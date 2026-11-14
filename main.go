@@ -7,6 +7,7 @@ import (
 	"os"
 	"webhook-delivery-backend/internal/db"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -61,6 +62,8 @@ func main() {
 	handler := &WebhookHandler{queries: queries}
 
 	router := gin.Default()
+	router.Use(cors.Default())
+
 	router.GET("/subscriptions", handler.List)
 	router.POST("/subscriptions", handler.Create)
 
