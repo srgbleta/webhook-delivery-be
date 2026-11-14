@@ -12,6 +12,39 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type Response struct {
+	Success bool        `json:"success"`
+	Data    interface{} `json:"data,omitempty"`
+	Error   *ErrorInfo  `json:"error,omitempty"`
+	Meta    *Meta       `json:"meta,omitempty"`
+}
+
+type ErrorInfo struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type Meta struct {
+	Page       int `json:"page,omitempty"`
+	PerPage    int `json:"per_page,omitempty"`
+	Total      int `json:"total,omitempty"`
+	TotalPages int `json:"total_pages,omitempty"`
+}
+
+func OK(c *gin.Context, data interface{}) {
+	c.JSON(http.StatusOK, Response{
+		Success: true,
+		Data:    data,
+	})
+}
+
+func Fail(c *gin.Context, status int, code, message string) {
+	c.JSON(status, Response{
+		Success: false,
+		Error:   &ErrorInfo{Code: code, Message: message},
+	})
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -40,11 +73,9 @@ type WebhookHandler struct {
 func (h *WebhookHandler) List(c *gin.Context) {
 	webhooks, err := h.queries.ListWebhooks(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "could not list subscriptions",
-		})
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not list subscriptions")
 		return
 	}
 
-	c.JSON(http.StatusOK, webhooks)
+	OK(c, webhooks)
 }
