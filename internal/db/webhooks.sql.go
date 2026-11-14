@@ -9,9 +9,10 @@ import (
 	"context"
 )
 
-const createWebhook = `-- name: CreateWebhook :exec
+const createWebhook = `-- name: CreateWebhook :one
 INSERT INTO webhooks (event_name, target_url)
 VALUES ($1, $2)
+RETURNING id, event_name, target_url
 `
 
 type CreateWebhookParams struct {
@@ -19,9 +20,11 @@ type CreateWebhookParams struct {
 	TargetUrl string
 }
 
-func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) error {
-	_, err := q.db.Exec(ctx, createWebhook, arg.EventName, arg.TargetUrl)
-	return err
+func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (Webhook, error) {
+	row := q.db.QueryRow(ctx, createWebhook, arg.EventName, arg.TargetUrl)
+	var i Webhook
+	err := row.Scan(&i.ID, &i.EventName, &i.TargetUrl)
+	return i, err
 }
 
 const listWebhooks = `-- name: ListWebhooks :many

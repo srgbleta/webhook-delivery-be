@@ -62,6 +62,7 @@ func main() {
 
 	router := gin.Default()
 	router.GET("/subscriptions", handler.List)
+	router.POST("/subscriptions", handler.Create)
 
 	router.Run() // Listens on 0.0.0.0:8080
 }
@@ -78,4 +79,29 @@ func (h *WebhookHandler) List(c *gin.Context) {
 	}
 
 	OK(c, webhooks)
+}
+
+type CreateWebhookRequest struct {
+	EventName string `json:"event_name" binding:"required"`
+	TargetURL string `json:"target_url" binding:"required"`
+}
+
+func (h *WebhookHandler) Create(c *gin.Context) {
+	var req CreateWebhookRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, "STATUS_BAD_REQUEST", "event_name and target_url are required")
+		return
+	}
+
+	webhook, err := h.queries.CreateWebhook(c.Request.Context(), db.CreateWebhookParams{
+		EventName: req.EventName,
+		TargetUrl: req.TargetURL,
+	})
+
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not create webhook")
+	}
+
+	OK(c, webhook)
 }
