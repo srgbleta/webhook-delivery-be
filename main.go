@@ -64,8 +64,8 @@ func main() {
 	router := gin.Default()
 	router.Use(cors.Default())
 
-	router.GET("/subscriptions", handler.List)
-	router.POST("/subscriptions", handler.Create)
+	router.GET("/webhooks", handler.List)
+	router.POST("/webhooks", handler.Create)
 
 	router.Run() // Listens on 0.0.0.0:8080
 }
