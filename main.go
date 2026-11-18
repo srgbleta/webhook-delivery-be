@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 	"webhook-delivery-backend/internal/db"
 
 	"github.com/gin-contrib/cors"
@@ -66,6 +71,7 @@ func main() {
 
 	router.GET("/webhooks", handler.List)
 	router.POST("/webhooks", handler.Create)
+	router.POST("/trigger", handler.HandleEvent)
 
 	router.Run() // Listens on 0.0.0.0:8080
 }
@@ -107,4 +113,75 @@ func (h *WebhookHandler) Create(c *gin.Context) {
 	}
 
 	OK(c, webhook)
+}
+
+type HandleEventRequest struct {
+	EventName string `json:"event_name" binding:"required"`
+	Data      any    `json:"data" binding:"required"`
+}
+
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
+func sendWebhook(ctx context.Context, targetURL string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode payload %w\n", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		targetURL,
+		bytes.NewReader(body),
+	)
+
+	if err != nil {
+		return fmt.Errorf("create request %v\n", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %v\n", err)
+	}
+
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("target returned HTTP %d\n", res.StatusCode)
+	}
+
+	return nil
+}
+
+func (h *WebhookHandler) HandleEvent(c *gin.Context) {
+	var req HandleEventRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, "STATUS_BAD_REQUEST", "event_name and data are required")
+		return
+	}
+
+	// one event could've been registered for multiple webhooks, getting all of them here
+	webhooks, err := h.queries.ListWebhooksByEvent(c, req.EventName)
+
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not list subscriptions")
+		return
+	}
+
+	var wg sync.WaitGroup
+
+	for _, webhook := range webhooks {
+		wg.Go(func() {
+			sendWebhook(c.Request.Context(), webhook.TargetUrl, req.Data)
+		})
+	}
+
+	wg.Wait()
+
+	OK(c, req.EventName)
 }

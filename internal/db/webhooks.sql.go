@@ -64,3 +64,37 @@ func (q *Queries) ListWebhooks(ctx context.Context) ([]Webhook, error) {
 	}
 	return items, nil
 }
+
+const listWebhooksByEvent = `-- name: ListWebhooksByEvent :many
+SELECT id,
+    event_name,
+    target_url,
+    status
+FROM webhooks
+WHERE event_name = ($1)
+`
+
+func (q *Queries) ListWebhooksByEvent(ctx context.Context, eventName string) ([]Webhook, error) {
+	rows, err := q.db.Query(ctx, listWebhooksByEvent, eventName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Webhook
+	for rows.Next() {
+		var i Webhook
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventName,
+			&i.TargetUrl,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
