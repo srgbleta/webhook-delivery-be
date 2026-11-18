@@ -1,7 +1,8 @@
 -- name: ListWebhooks :many
 SELECT id,
     event_name,
-    target_url
+    target_url,
+    status
 FROM webhooks;
 -- name: CreateWebhook :one
 INSERT INTO webhooks (event_name, target_url)

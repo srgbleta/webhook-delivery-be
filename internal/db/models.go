@@ -8,4 +8,5 @@ type Webhook struct {
 	ID        int64
 	EventName string
 	TargetUrl string
+	Status    string
 }

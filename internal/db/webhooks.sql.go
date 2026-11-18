@@ -12,7 +12,7 @@ import (
 const createWebhook = `-- name: CreateWebhook :one
 INSERT INTO webhooks (event_name, target_url)
 VALUES ($1, $2)
-RETURNING id, event_name, target_url
+RETURNING id, event_name, target_url, status
 `
 
 type CreateWebhookParams struct {
@@ -23,14 +23,20 @@ type CreateWebhookParams struct {
 func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (Webhook, error) {
 	row := q.db.QueryRow(ctx, createWebhook, arg.EventName, arg.TargetUrl)
 	var i Webhook
-	err := row.Scan(&i.ID, &i.EventName, &i.TargetUrl)
+	err := row.Scan(
+		&i.ID,
+		&i.EventName,
+		&i.TargetUrl,
+		&i.Status,
+	)
 	return i, err
 }
 
 const listWebhooks = `-- name: ListWebhooks :many
 SELECT id,
     event_name,
-    target_url
+    target_url,
+    status
 FROM webhooks
 `
 
@@ -43,7 +49,12 @@ func (q *Queries) ListWebhooks(ctx context.Context) ([]Webhook, error) {
 	var items []Webhook
 	for rows.Next() {
 		var i Webhook
-		if err := rows.Scan(&i.ID, &i.EventName, &i.TargetUrl); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventName,
+			&i.TargetUrl,
+			&i.Status,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
