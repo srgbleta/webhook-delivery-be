@@ -4,6 +4,24 @@
 
 package db
 
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+type Delivery struct {
+	ID        int64
+	WebhookID int64
+	EventID   int64
+	Status    string
+}
+
+type Event struct {
+	ID        int64
+	Name      string
+	Data      []byte
+	CreatedAt pgtype.Timestamp
+}
+
 type Webhook struct {
 	ID        int64
 	EventName string

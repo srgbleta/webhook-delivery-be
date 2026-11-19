@@ -124,7 +124,7 @@ var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 }
 
-func sendWebhook(ctx context.Context, targetURL string, payload any) error {
+func sendWebhook(ctx context.Context, h *WebhookHandler, targetURL string, payload any, deliveryId int64) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode payload %w\n", err)
@@ -154,6 +154,14 @@ func sendWebhook(ctx context.Context, targetURL string, payload any) error {
 		return fmt.Errorf("target returned HTTP %d\n", res.StatusCode)
 	}
 
+	log.Printf("sendWebhook success, updating delivery %v\n", deliveryId)
+
+	// update status of delivery
+	h.queries.UpdateDeliveryStatus(ctx, db.UpdateDeliveryStatusParams{
+		ID:     deliveryId,
+		Status: "done", // TODO:
+	})
+
 	return nil
 }
 
@@ -173,11 +181,40 @@ func (h *WebhookHandler) HandleEvent(c *gin.Context) {
 		return
 	}
 
+	// check if it's a valid event
+	dataBytes, err := json.Marshal(req.Data)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "data malformed")
+		return
+	}
+
+	event, err := h.queries.CreateEvent(c, db.CreateEventParams{
+		Name: req.EventName,
+		Data: dataBytes,
+	})
+
+	log.Printf("inserted event ? %v\n", event)
+
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not save the event")
+		return
+	}
+
 	var wg sync.WaitGroup
 
 	for _, webhook := range webhooks {
+		delivery, err := h.queries.CreateDelivery(c, db.CreateDeliveryParams{
+			WebhookID: webhook.ID,
+			EventID:   event.ID,
+		})
+
+		if err != nil {
+			log.Printf("could not create delivery for event %v of webhook %v\n", event.ID, webhook.ID)
+			continue
+		}
+
 		wg.Go(func() {
-			sendWebhook(c.Request.Context(), webhook.TargetUrl, req.Data)
+			sendWebhook(c.Request.Context(), h, webhook.TargetUrl, req.Data, delivery.ID)
 		})
 	}
 
