@@ -52,16 +52,27 @@ func Fail(c *gin.Context, status int, code, message string) {
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env")
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("Unable to load .env: %v", err)
 	}
 
-	pool, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
-		log.Fatal(os.Stderr.Name(), "Unable to create connection pool: %v\n", err)
+		log.Fatalf("Unable to create connection pool: %v", err)
 	}
 	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("Unable to connect to database: %v", err)
+	}
 
 	queries := db.New(pool)
 	handler := &WebhookHandler{queries: queries}
@@ -73,7 +84,9 @@ func main() {
 	router.POST("/webhooks", handler.Create)
 	router.POST("/trigger", handler.HandleEvent)
 
-	router.Run() // Listens on 0.0.0.0:8080
+	if err := router.Run(":8080"); err != nil {
+		log.Fatalf("HTTP server failed: %v", err)
+	}
 }
 
 type WebhookHandler struct {
@@ -127,6 +140,11 @@ var httpClient = &http.Client{
 func sendWebhook(ctx context.Context, h *WebhookHandler, targetURL string, payload any, deliveryId int64) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
+		// update status of delivery
+		h.queries.UpdateDeliveryStatus(ctx, db.UpdateDeliveryStatusParams{
+			ID:     deliveryId,
+			Status: "failed", // TODO:
+		})
 		return fmt.Errorf("encode payload %w\n", err)
 	}
 
@@ -138,6 +156,11 @@ func sendWebhook(ctx context.Context, h *WebhookHandler, targetURL string, paylo
 	)
 
 	if err != nil {
+		// update status of delivery
+		h.queries.UpdateDeliveryStatus(ctx, db.UpdateDeliveryStatusParams{
+			ID:     deliveryId,
+			Status: "failed", // TODO:
+		})
 		return fmt.Errorf("create request %v\n", err)
 	}
 
@@ -145,12 +168,23 @@ func sendWebhook(ctx context.Context, h *WebhookHandler, targetURL string, paylo
 
 	res, err := httpClient.Do(req)
 	if err != nil {
+		// update status of delivery
+		h.queries.UpdateDeliveryStatus(ctx, db.UpdateDeliveryStatusParams{
+			ID:     deliveryId,
+			Status: "failed", // TODO:
+		})
 		return fmt.Errorf("send request: %v\n", err)
 	}
 
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+
+		// update status of delivery
+		h.queries.UpdateDeliveryStatus(ctx, db.UpdateDeliveryStatusParams{
+			ID:     deliveryId,
+			Status: "failed", // TODO:
+		})
 		return fmt.Errorf("target returned HTTP %d\n", res.StatusCode)
 	}
 
