@@ -5,14 +5,48 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
 
 jobs:
-  connection-test:
+  deploy:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
 
     steps:
+      - name: Find successful CI build for this commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          RUN=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&event=push&per_page=1" \
+            --jq '.workflow_runs[0]')
+
+          if [[ "$RUN" == "null" || -z "$RUN" ]]; then
+            echo "No successful CI build for this commit. Wait for CI, then run Deploy again."
+            exit 1
+          fi
+
+          RUN_ID=$(jq -r '.id' <<< "$RUN")
+          ATTEMPT=$(jq -r '.run_attempt' <<< "$RUN")
+          TAG="${GITHUB_SHA}-${RUN_ID}-${ATTEMPT}"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying ghcr.io/srgbleta/webhook-api:$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out matching configuration and migrations
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -31,13 +65,82 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
 
-      - name: Test EC2 connection
+          cat > ~/.ssh/config <<'EOF'
+          Host webhook-vm
+            HostName 100.77.232.124
+            User ubuntu
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            ConnectTimeout 30
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Transfer configuration and migrations
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -o IdentitiesOnly=yes \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=30 \
-            ubuntu@100.77.232.124 \
-            'whoami && hostname && sudo -n docker compose version'
+          set -euo pipefail
+          tar -czf release.tar.gz \
+            compose.yaml compose.production.yaml sql/migrations
+
+          ssh webhook-vm "mkdir -p ~/webhook-releases/$RELEASE_TAG"
+          scp release.tar.gz \
+            "webhook-vm:webhook-releases/$RELEASE_TAG/release.tar.gz"
+
+      - name: Deploy and verify
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          ssh webhook-vm "bash -s -- '$RELEASE_TAG'" <<'REMOTE'
+          set -euo pipefail
+
+          TAG="$1"
+          cd "$HOME/webhook-releases/$TAG"
+          tar -xzf release.tar.gz
+
+          printf 'API_IMAGE=ghcr.io/srgbleta/webhook-api:%s\n' "$TAG" \
+            > release.env
+
+          compose() {
+            sudo -n docker compose \
+              -p webhook-delivery-be \
+              --env-file "$HOME/webhook-delivery-be/.env" \
+              --env-file release.env \
+              -f compose.yaml \
+              -f compose.production.yaml \
+              "$@"
+          }
+
+          # Download the new application before changing anything.
+          compose pull api
+
+          # Confirm the existing database is ready.
+          compose exec -T db sh -c \
+            'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+
+          # Stop here if migrations fail.
+          compose run --rm --no-deps migrate up
+
+          # Replace only the API container.
+          compose up -d --no-deps --no-build api
+
+          # Allow up to about a minute for the API to become ready.
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error \
+              --max-time 5 \
+              http://127.0.0.1:8080/webhooks > /dev/null; then
+              ln -sfn "$PWD" "$HOME/webhook-current"
+              echo "Deployment verified: $TAG"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          compose logs --tail=50 api
+          echo "Deployment verification failed."
+          exit 1
+          REMOTE
