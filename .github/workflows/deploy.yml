@@ -112,18 +112,18 @@ jobs:
               --env-file release.env \
               -f compose.yaml \
               -f compose.production.yaml \
-              "$@"
+              "$@" < /dev/null
           }
 
           # Download the new application before changing anything.
           compose pull api
 
           # Confirm the existing database is ready.
-          compose exec -T db sh -c \
+          compose exec -T --interactive=false db sh -c \
             'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
           # Stop here if migrations fail.
-          compose run --rm --no-deps migrate up
+          compose run -T --interactive=false --rm --no-deps migrate up
 
           # Replace only the API container.
           compose up -d --no-deps --no-build api
