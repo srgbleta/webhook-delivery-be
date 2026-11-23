@@ -32,3 +32,41 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t webhook-api:${{ github.sha }} .
+
+  publish:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE: ghcr.io/srgbleta/webhook-api
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and publish image
+        run: |
+          TAG="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/srgbleta/webhook-delivery-be" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$IMAGE:$TAG" .
+
+          docker push "$IMAGE:$TAG"
+
+          echo "Published image: $IMAGE:$TAG" >> "$GITHUB_STEP_SUMMARY"
