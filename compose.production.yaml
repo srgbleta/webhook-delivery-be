@@ -1,3 +1,5 @@
 services:
   api:
     image: ${API_IMAGE:?Set API_IMAGE}
+    ports:
+      - "${API_PRIVATE_IP:?Set API_PRIVATE_IP}:8080:8080"
