@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 	"webhook-delivery-backend/internal/db"
 
@@ -35,6 +34,13 @@ type Meta struct {
 	PerPage    int `json:"per_page,omitempty"`
 	Total      int `json:"total,omitempty"`
 	TotalPages int `json:"total_pages,omitempty"`
+}
+
+func Accepted(c *gin.Context, data interface{}) {
+	c.JSON(http.StatusAccepted, Response{
+		Success: true,
+		Data:    data,
+	})
 }
 
 func OK(c *gin.Context, data interface{}) {
@@ -74,8 +80,7 @@ func main() {
 		log.Fatalf("Unable to connect to database: %v", err)
 	}
 
-	queries := db.New(pool)
-	handler := &WebhookHandler{queries: queries}
+	handler := &WebhookHandler{queries: db.New(pool), pool: pool}
 
 	router := gin.Default()
 	router.Use(cors.Default())
@@ -91,6 +96,7 @@ func main() {
 
 type WebhookHandler struct {
 	queries *db.Queries
+	pool    *pgxpool.Pool
 }
 
 func (h *WebhookHandler) List(c *gin.Context) {
@@ -202,42 +208,50 @@ func sendWebhook(ctx context.Context, h *WebhookHandler, targetURL string, paylo
 func (h *WebhookHandler) HandleEvent(c *gin.Context) {
 	var req HandleEventRequest
 
+	// bind req parameters to req
 	if err := c.ShouldBindJSON(&req); err != nil {
 		Fail(c, http.StatusBadRequest, "STATUS_BAD_REQUEST", "event_name and data are required")
 		return
 	}
 
-	// one event could've been registered for multiple webhooks, getting all of them here
-	webhooks, err := h.queries.ListWebhooksByEvent(c, req.EventName)
-
-	if err != nil {
-		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not list subscriptions")
-		return
-	}
-
-	// check if it's a valid event
+	// read 'data'
 	dataBytes, err := json.Marshal(req.Data)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "data malformed")
 		return
 	}
 
-	event, err := h.queries.CreateEvent(c, db.CreateEventParams{
+	ctx := c.Request.Context()
+
+	tx, err := h.pool.Begin(ctx)
+
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Something went wrong")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := h.queries.WithTx(tx)
+
+	webhooks, err := qtx.ListWebhooksByEvent(c, req.EventName)
+
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not list subscriptions")
+		return
+	}
+
+	event, err := qtx.CreateEvent(c, db.CreateEventParams{
 		Name: req.EventName,
 		Data: dataBytes,
 	})
-
-	log.Printf("inserted event ? %v\n", event)
 
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "could not save the event")
 		return
 	}
 
-	var wg sync.WaitGroup
-
 	for _, webhook := range webhooks {
-		delivery, err := h.queries.CreateDelivery(c, db.CreateDeliveryParams{
+		_, err := qtx.CreateDelivery(c, db.CreateDeliveryParams{
 			WebhookID: webhook.ID,
 			EventID:   event.ID,
 		})
@@ -246,13 +260,13 @@ func (h *WebhookHandler) HandleEvent(c *gin.Context) {
 			log.Printf("could not create delivery for event %v of webhook %v\n", event.ID, webhook.ID)
 			continue
 		}
-
-		wg.Go(func() {
-			sendWebhook(c.Request.Context(), h, webhook.TargetUrl, req.Data, delivery.ID)
-		})
 	}
 
-	wg.Wait()
+	if err := tx.Commit(ctx); err != nil {
+		Fail(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Something went wrong")
+		log.Printf("could not commit the transaction\n")
+		return
+	}
 
-	OK(c, req.EventName)
+	Accepted(c, req.EventName)
 }
