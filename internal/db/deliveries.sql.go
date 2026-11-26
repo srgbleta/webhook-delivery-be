@@ -32,6 +32,89 @@ func (q *Queries) CreateDelivery(ctx context.Context, arg CreateDeliveryParams) 
 	return i, err
 }
 
+const listPendingDeliveries = `-- name: ListPendingDeliveries :many
+SELECT id, webhook_id, event_id, status
+FROM deliveries
+WHERE status = 'pending'
+`
+
+func (q *Queries) ListPendingDeliveries(ctx context.Context) ([]Delivery, error) {
+	rows, err := q.db.Query(ctx, listPendingDeliveries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Delivery
+	for rows.Next() {
+		var i Delivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.WebhookID,
+			&i.EventID,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingDeliveriesWithWebhooks = `-- name: ListPendingDeliveriesWithWebhooks :many
+SELECT d.id AS delivery_id,
+    d.event_id AS event_id,
+    d.status AS delivery_status,
+    w.id AS webhook_id,
+    w.event_name AS event_name,
+    w.target_url AS target_url,
+    e.data AS event_data
+FROM deliveries AS d
+    JOIN webhooks AS w ON d.webhook_id = w.id
+    JOIN events AS e ON d.event_id = e.id
+WHERE d.status = 'pending'
+`
+
+type ListPendingDeliveriesWithWebhooksRow struct {
+	DeliveryID     int64
+	EventID        int64
+	DeliveryStatus string
+	WebhookID      int64
+	EventName      string
+	TargetUrl      string
+	EventData      []byte
+}
+
+func (q *Queries) ListPendingDeliveriesWithWebhooks(ctx context.Context) ([]ListPendingDeliveriesWithWebhooksRow, error) {
+	rows, err := q.db.Query(ctx, listPendingDeliveriesWithWebhooks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingDeliveriesWithWebhooksRow
+	for rows.Next() {
+		var i ListPendingDeliveriesWithWebhooksRow
+		if err := rows.Scan(
+			&i.DeliveryID,
+			&i.EventID,
+			&i.DeliveryStatus,
+			&i.WebhookID,
+			&i.EventName,
+			&i.TargetUrl,
+			&i.EventData,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateDeliveryStatus = `-- name: UpdateDeliveryStatus :one
 UPDATE deliveries
 SET status = ($2)
